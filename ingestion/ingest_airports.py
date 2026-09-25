@@ -25,9 +25,12 @@ def _snapshot_file(day: date = None, init: bool = False):
 
 
 def ingest_bronze(day: date = None, init: bool = False):
-    # TODO : Doit télécharger le snapshot du jour vers bronze/ (ou vers init/).
-    # utiliser fetch_csv() de common.py (à implémenter aussi) pour rapatrier la données.
-    raise NotImplementedError
+    """Rapatrie le snapshot du jour (ou d'init/) dans bronze/, sans rien transformer."""
+    subdir, filename = _snapshot_file(day, init)
+    # fetch_csv télécharge le fichier s'il n'est pas déjà en local, puis le relit depuis le
+    # disque. Ici on ignore volontairement le DataFrame renvoyé : le rôle de la couche bronze
+    # est uniquement de poser le fichier brut sur disque. C'est ingest_silver qui le relira.
+    fetch_csv(subdir, filename)
 
 
 def create_silver_table(con):
