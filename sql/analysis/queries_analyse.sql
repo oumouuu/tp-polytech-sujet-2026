@@ -5,10 +5,7 @@
 -- êtes libre d'essayer d'implémenter ces requêtes pour valider
 -- votre conception.
 
--- Requêtes écrites sur le modèle gold (fact_booking + dim_flight + dim_passenger + dim_airport
--- + dim_currency) pour vérifier qu'il répond simplement à chaque question. Chaque requête est
--- séparée par un point-virgule : le fichier peut être exécuté d'un bloc, ou requête par requête
--- (ex. depuis Python : duckdb.connect("warehouse.duckdb").sql("...")).
+-- Mes requêtes pour tester le modèle gold.
 
 -- 1. Chiffre d'affaires par mois et par devise
 SELECT

@@ -1,22 +1,12 @@
 """
 Ingestion de l'entité `flights`, découpée en 3 fonctions bronze/silver/gold
 (même structure que `ingest_airports.py`, utilisé comme modèle).
-
-Pourquoi un upsert + désactivation, comme pour les aéroports ? L'exploration des fichiers
-journaliers montre que `flights_<date>.csv` est un extrait COMPLET du référentiel des vols, et
-que d'un jour à l'autre des vols apparaissent, sont modifiés (horaire, avion, date — même
-flight_id) ou disparaissent. C'est donc une dimension qui évolue, pas un flux d'évènements :
-- insert si le flight_id est nouveau,
-- update si le flight_id existe déjà (on garde la version la plus récente),
-- désactivation (is_active = false) si le flight_id a disparu du fichier du jour, sans
-  suppression physique : des réservations existent déjà sur ces vols.
 """
 from datetime import date
 
 from common import fetch_csv, get_connection
 
-# Colonnes métier du CSV source, hors clé (flight_id). Même rôle que AIRPORT_COLS dans
-# ingest_airports.py : cette liste pilote à la fois l'INSERT et le SET de l'upsert.
+# colonnes du CSV sauf la clé flight_id (comme AIRPORT_COLS dans ingest_airports.py)
 FLIGHT_COLS = [
     "flight_number",
     "airline",
@@ -37,15 +27,12 @@ def _snapshot_file(day: date = None, init: bool = False):
 
 
 def ingest_bronze(day: date = None, init: bool = False):
-    """Rapatrie le snapshot flights du jour (ou d'init/) dans bronze/, sans transformation."""
     subdir, filename = _snapshot_file(day, init)
     fetch_csv(subdir, filename)
 
 
 def create_silver_table(con):
-    # flight_date en DATE et les horaires en TIME (et non en texte) : DuckDB convertit
-    # automatiquement les chaînes '2025-09-22' et '10:30' du CSV à l'insertion, et on pourra
-    # faire de l'arithmétique dessus en gold (durée de vol) sans reparser du texte.
+    # flight_date en DATE et les heures en TIME pour pouvoir calculer la durée en gold
     con.execute("""
         CREATE TABLE IF NOT EXISTS silver_flights (
             flight_id VARCHAR PRIMARY KEY,
@@ -66,9 +53,11 @@ def create_silver_table(con):
 
 
 def ingest_silver(day: date = None, init: bool = False):
-    """Relit le snapshot depuis bronze/ et l'upsert dans silver_flights (clé : flight_id)."""
+    """Upsert du snapshot du jour dans silver_flights (clé : flight_id)."""
+    # Même logique que les aéroports : le fichier du jour contient tous les vols,
+    # certains sont modifiés et d'autres disparaissent -> upsert + désactivation.
     subdir, filename = _snapshot_file(day, init)
-    df = fetch_csv(subdir, filename)  # déjà en cache local : pas de nouveau téléchargement
+    df = fetch_csv(subdir, filename)
     snapshot_date = date(2025, 8, 31) if init else day
 
     df = df.copy()
@@ -78,9 +67,6 @@ def ingest_silver(day: date = None, init: bool = False):
     create_silver_table(con)
     con.register("snapshot", df)
 
-    # Upsert : nouvelles clés insérées, clés connues mises à jour avec les valeurs du jour.
-    # insert_timestamp n'est jamais écrasé ; update_timestamp est rafraîchi à chaque passage ;
-    # deleted_date repasse à NULL (le vol est présent aujourd'hui, donc actif).
     update_cols = FLIGHT_COLS + ["is_active"]
     set_clause = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
     set_clause += ", deleted_date = NULL, update_timestamp = now()"
@@ -94,10 +80,8 @@ def ingest_silver(day: date = None, init: bool = False):
         ON CONFLICT (flight_id) DO UPDATE SET {set_clause}
     """)
 
-    # Vols absents du snapshot du jour = supprimés côté source. On les désactive seulement :
-    # les réservations déjà faites sur ces vols doivent rester rattachables à leur vol.
-    # Le filtre `is_active = true` rend l'opération rejouable : un second passage sur le même
-    # jour ne touche plus aux lignes déjà désactivées (deleted_date reste figé).
+    # les vols qui ne sont plus dans le fichier du jour sont désactivés (pas supprimés,
+    # il y a des réservations dessus)
     con.execute(
         """
         UPDATE silver_flights SET is_active = false, deleted_date = ?, update_timestamp = now()
@@ -111,15 +95,10 @@ def ingest_silver(day: date = None, init: bool = False):
 
 
 def ingest_gold():
-    """Reconstruit dim_flight à partir de silver_flights, en ajoutant la durée de vol calculée.
-
-    Piège découvert à l'exploration : 99 vols sur 350 dans init/ ont une arrival_time plus
-    petite que departure_time (ex. départ 15:30, arrivée 03:41). Ce ne sont pas des erreurs
-    mais des vols de nuit qui passent minuit : la source ne donne que des heures, sans date
-    d'arrivée. Une soustraction naïve donnerait une durée négative ; on ajoute donc 24 h
-    (1440 minutes) dans ce cas. Hypothèse assumée : aucun vol ne dure plus de 24 h.
-    """
+    """dim_flight = silver_flights + durée de vol calculée."""
     con = get_connection()
+    # durée = arrivée - départ en minutes
+    # si l'arrivée est avant le départ c'est un vol de nuit qui passe minuit : on ajoute 24h
     con.execute("""
         CREATE OR REPLACE TABLE dim_flight AS
         SELECT

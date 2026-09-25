@@ -2,18 +2,8 @@
 Ingestion de l'entité `passengers`, découpée en 3 fonctions bronze/silver/gold
 (même structure que `ingest_airports.py`, utilisé comme modèle).
 
-Particularité : deux systèmes sources (un CRM anglophone, un CRM francophone) livrent chacun un
-fichier, avec des schémas différents :
-- noms de colonnes différents (passenger_id / id_passager, first_name / prenom, ...),
-- valeurs de genre différentes (Male/Female vs Homme/Femme),
-- formats de date différents (YYYY-MM-DD vs DD/MM/YYYY).
-Les identifiants ne se chevauchent pas (une seule séquence globale P00001, P00002, ...), donc la
-consolidation porte sur le schéma et les formats, pas sur la déduplication.
-
-Stratégie : la couche bronze garde les deux fichiers bruts séparés ; la couche silver les
-harmonise vers UN schéma unique (celui du fichier EN, majoritaire) puis les charge dans une seule
-table silver_passengers avec la même logique upsert + désactivation que les vols (les passagers
-sont un référentiel qui évolue : ajouts quotidiens, corrections, rares suppressions).
+Il y a deux fichiers sources (EN et FR) qui n'ont pas le même format : on les met au même
+format dans le silver, dans une seule table silver_passengers.
 """
 from datetime import date
 
@@ -21,8 +11,8 @@ import pandas as pd
 
 from common import fetch_csv, get_connection
 
-# Schéma cible = schéma du fichier EN. Le fichier FR est renommé vers ce schéma.
-FR_TO_EN_COLUMNS = {
+# correspondance des colonnes FR -> EN (on garde les noms anglais comme schéma final)
+RENOMMAGE_FR = {
     "id_passager": "passenger_id",
     "prenom": "first_name",
     "nom": "last_name",
@@ -32,11 +22,10 @@ FR_TO_EN_COLUMNS = {
     "date_naissance": "birth_date",
     "date_inscription": "signup_date",
 }
-FR_TO_EN_GENDER = {"Homme": "Male", "Femme": "Female"}
+GENRE_FR = {"Homme": "Male", "Femme": "Female"}
 
-# Colonnes métier de la table silver, hors clé (passenger_id).
-# source_system est ajoutée par nous : savoir de quel CRM vient chaque ligne est utile pour
-# le debug et la traçabilité (ex. une anomalie qui ne toucherait que le flux FR).
+# colonnes de la table silver sauf la clé
+# source_system : "EN" ou "FR", pour savoir de quel fichier vient la ligne
 PASSENGER_COLS = [
     "first_name",
     "last_name",
@@ -48,14 +37,12 @@ PASSENGER_COLS = [
     "source_system",
 ]
 
-# Date de référence pour le calcul de l'âge en gold : fin de la période simulée. Un âge calculé
-# par rapport à "aujourd'hui" changerait à chaque exécution du pipeline, ce qui rendrait les
-# résultats non reproductibles d'une machine (ou d'un mois) à l'autre.
-REFERENCE_DATE = date(2025, 9, 30)
+# date à laquelle on calcule l'âge (fin de la période simulée), pour que le résultat
+# ne change pas à chaque fois qu'on relance le pipeline
+DATE_REF = date(2025, 9, 30)
 
 
 def _snapshot_files(day: date = None, init: bool = False):
-    """Renvoie (subdir, fichier_en, fichier_fr) du jour demandé."""
     if init:
         return "init", "passengers_en.csv", "passengers_fr.csv"
     assert day is not None
@@ -64,23 +51,21 @@ def _snapshot_files(day: date = None, init: bool = False):
 
 
 def ingest_bronze(day: date = None, init: bool = False):
-    """Rapatrie les deux snapshots (EN et FR) du jour dans bronze/, tels quels."""
-    subdir, file_en, file_fr = _snapshot_files(day, init)
-    fetch_csv(subdir, file_en)
-    fetch_csv(subdir, file_fr)
+    subdir, fichier_en, fichier_fr = _snapshot_files(day, init)
+    fetch_csv(subdir, fichier_en)
+    fetch_csv(subdir, fichier_fr)
 
 
-def _harmonize(df_en: pd.DataFrame, df_fr: pd.DataFrame) -> pd.DataFrame:
-    """Met les deux sources au même schéma et les empile en un seul DataFrame."""
+def _fusionner(df_en, df_fr):
+    """Met les deux fichiers au même format et les colle l'un sous l'autre."""
     en = df_en.copy()
-    fr = df_fr.rename(columns=FR_TO_EN_COLUMNS)  # rename renvoie une copie
+    fr = df_fr.rename(columns=RENOMMAGE_FR)
 
-    # Genre : on aligne les valeurs FR sur les valeurs EN.
-    fr["gender"] = fr["gender"].replace(FR_TO_EN_GENDER)
+    # Homme/Femme -> Male/Female
+    fr["gender"] = fr["gender"].replace(GENRE_FR)
 
-    # Dates : on convertit tout en texte ISO (YYYY-MM-DD). Le format est donné explicitement à
-    # pandas pour éviter toute ambiguïté jour/mois (08/01/1964 = 8 janvier, pas 1er août).
-    # DuckDB convertira ensuite ces chaînes ISO en DATE à l'insertion.
+    # dates : le FR est en JJ/MM/AAAA, on remet tout en AAAA-MM-JJ
+    # (on donne le format à pandas pour ne pas confondre le jour et le mois)
     for col in ["birth_date", "signup_date"]:
         fr[col] = pd.to_datetime(fr[col], format="%d/%m/%Y").dt.strftime("%Y-%m-%d")
         en[col] = pd.to_datetime(en[col], format="%Y-%m-%d").dt.strftime("%Y-%m-%d")
@@ -88,9 +73,8 @@ def _harmonize(df_en: pd.DataFrame, df_fr: pd.DataFrame) -> pd.DataFrame:
     en["source_system"] = "EN"
     fr["source_system"] = "FR"
 
-    # Même ordre de colonnes pour les deux, puis empilement vertical.
-    cols = ["passenger_id"] + PASSENGER_COLS
-    return pd.concat([en[cols], fr[cols]], ignore_index=True)
+    colonnes = ["passenger_id"] + PASSENGER_COLS
+    return pd.concat([en[colonnes], fr[colonnes]], ignore_index=True)
 
 
 def create_silver_table(con):
@@ -114,9 +98,9 @@ def create_silver_table(con):
 
 
 def ingest_silver(day: date = None, init: bool = False):
-    """Relit les deux snapshots depuis bronze/, les harmonise, et upsert dans silver_passengers."""
-    subdir, file_en, file_fr = _snapshot_files(day, init)
-    df = _harmonize(fetch_csv(subdir, file_en), fetch_csv(subdir, file_fr))
+    """Upsert des deux snapshots (EN + FR) dans silver_passengers (clé : passenger_id)."""
+    subdir, fichier_en, fichier_fr = _snapshot_files(day, init)
+    df = _fusionner(fetch_csv(subdir, fichier_en), fetch_csv(subdir, fichier_fr))
     snapshot_date = date(2025, 8, 31) if init else day
 
     df["is_active"] = True
@@ -125,6 +109,7 @@ def ingest_silver(day: date = None, init: bool = False):
     create_silver_table(con)
     con.register("snapshot", df)
 
+    # même upsert que les aéroports et les vols
     update_cols = PASSENGER_COLS + ["is_active"]
     set_clause = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
     set_clause += ", deleted_date = NULL, update_timestamp = now()"
@@ -138,8 +123,7 @@ def ingest_silver(day: date = None, init: bool = False):
         ON CONFLICT (passenger_id) DO UPDATE SET {set_clause}
     """)
 
-    # Passagers disparus des fichiers du jour : désactivés, jamais supprimés (leurs réservations
-    # passées doivent rester rattachables).
+    # passagers disparus du fichier -> désactivés
     con.execute(
         """
         UPDATE silver_passengers SET is_active = false, deleted_date = ?, update_timestamp = now()
@@ -153,36 +137,33 @@ def ingest_silver(day: date = None, init: bool = False):
 
 
 def ingest_gold():
-    """Reconstruit dim_passenger à partir de silver_passengers, avec âge et tranche d'âge calculés.
-
-    age(REFERENCE_DATE, birth_date) donne un âge exact (tient compte du jour et du mois, pas
-    seulement de l'année). Le découpage en tranches est un choix métier libre ; celui-ci est
-    classique en marketing et donne des groupes de taille comparable sur ce jeu de données.
-    """
+    """dim_passenger = silver_passengers + âge et tranche d'âge."""
     con = get_connection()
+    # age() de DuckDB donne l'âge exact (jour et mois compris)
+    # les tranches sont un choix libre (le prof a dit que le découpage n'avait pas d'importance)
     con.execute(
         """
         CREATE OR REPLACE TABLE dim_passenger AS
-        WITH with_age AS (
+        WITH tmp AS (
             SELECT
                 *,
-                CAST(date_part('year', age(?::DATE, birth_date)) AS INTEGER) AS age_years
+                CAST(date_part('year', age(?::DATE, birth_date)) AS INTEGER) AS age
             FROM silver_passengers
         )
         SELECT
             *,
             CASE
-                WHEN age_years < 18 THEN '<18'
-                WHEN age_years < 25 THEN '18-24'
-                WHEN age_years < 35 THEN '25-34'
-                WHEN age_years < 45 THEN '35-44'
-                WHEN age_years < 55 THEN '45-54'
-                WHEN age_years < 65 THEN '55-64'
+                WHEN age < 18 THEN '<18'
+                WHEN age < 25 THEN '18-24'
+                WHEN age < 35 THEN '25-34'
+                WHEN age < 45 THEN '35-44'
+                WHEN age < 55 THEN '45-54'
+                WHEN age < 65 THEN '55-64'
                 ELSE '65+'
             END AS age_bracket
-        FROM with_age
+        FROM tmp
         """,
-        [REFERENCE_DATE],
+        [DATE_REF],
     )
     con.close()
 

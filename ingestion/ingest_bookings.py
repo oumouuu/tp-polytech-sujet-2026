@@ -2,19 +2,13 @@
 Ingestion de l'entité `bookings`, découpée en 3 fonctions bronze/silver/gold
 (même structure que `ingest_airports.py`, utilisé comme modèle).
 
-Pourquoi un simple insert ici, et pas un upsert ? L'exploration montre que `bookings_<date>.csv`
-ne contient QUE les réservations effectuées ce jour-là (pas de cumul, aucun booking_id commun
-entre deux jours), et qu'une réservation, une fois créée, n'est jamais modifiée ni supprimée.
-C'est un flux d'évènements immuables : c'est la table de FAIT du modèle. On ajoute donc les
-lignes du jour, sans mise à jour ni désactivation.
-
-`ON CONFLICT DO NOTHING` sert uniquement à rendre la fonction rejouable : si le pipeline est
-relancé sur un jour déjà ingéré, les booking_id déjà présents sont ignorés au lieu d'être
-dupliqués (idempotence).
+Les réservations sont des évènements : le fichier du jour ne contient que celles du jour et
+elles ne changent jamais. Donc ici c'est un simple insert, pas d'upsert ni de désactivation.
+C'est la table de fait du modèle.
 """
 from datetime import date
 
-from common import ensure_dim_currency, fetch_csv, get_connection
+from common import fetch_csv, get_connection, init_dim_currency
 
 BOOKING_COLS = [
     "passenger_id",
@@ -36,15 +30,12 @@ def _snapshot_file(day: date = None, init: bool = False):
 
 
 def ingest_bronze(day: date = None, init: bool = False):
-    """Rapatrie le fichier bookings du jour (ou d'init/) dans bronze/, tel quel."""
     subdir, filename = _snapshot_file(day, init)
     fetch_csv(subdir, filename)
 
 
 def create_silver_table(con):
-    # Pas de is_active / deleted_date : un évènement ne se désactive pas.
-    # insert_timestamp et update_timestamp sont conservés par cohérence avec les autres
-    # tables ; comme une réservation n'est jamais retouchée, ils resteront toujours égaux.
+    # pas de is_active / deleted_date : une réservation ne se désactive pas
     con.execute("""
         CREATE TABLE IF NOT EXISTS silver_bookings (
             booking_id VARCHAR PRIMARY KEY,
@@ -63,14 +54,15 @@ def create_silver_table(con):
 
 
 def ingest_silver(day: date = None, init: bool = False):
-    """Relit le fichier du jour depuis bronze/ et insère ses lignes dans silver_bookings."""
+    """Insert des réservations du jour dans silver_bookings."""
     subdir, filename = _snapshot_file(day, init)
-    df = fetch_csv(subdir, filename)  # déjà en cache local : pas de nouveau téléchargement
+    df = fetch_csv(subdir, filename)
 
     con = get_connection()
     create_silver_table(con)
     con.register("snapshot", df)
 
+    # DO NOTHING : si on relance le même jour deux fois, on ne crée pas de doublons
     cols = ", ".join(BOOKING_COLS)
     con.execute(f"""
         INSERT INTO silver_bookings (booking_id, {cols}, insert_timestamp, update_timestamp)
@@ -84,21 +76,13 @@ def ingest_silver(day: date = None, init: bool = False):
 
 
 def ingest_gold():
-    """Reconstruit fact_booking, puis la table d'agrégation agg_revenue_daily_airline.
-
-    fact_booking : une ligne par réservation (grain = la réservation), avec les clés vers les
-    dimensions (passenger_id, flight_id, airport_id, currency), les mesures (amount, amount_eur)
-    et deux "dimensions dégénérées" (seat_class, booking_channel : trop simples pour justifier
-    une table à part). amount_eur = amount * rate_to_eur, via dim_currency.
-
-    La table d'agrégation vit ici car elle dépend de fact_booking ET de dim_flight (pour la
-    compagnie) : dans run_month.py, le gold des réservations est exécuté en dernier, donc
-    dim_flight est déjà à jour au moment où on la construit.
-    """
-    ensure_dim_currency()
+    """fact_booking (avec amount_eur) + table d'agrégation par jour et compagnie."""
+    init_dim_currency()
 
     con = get_connection()
 
+    # une ligne par réservation, avec les clés vers les dimensions et le montant en euros
+    # seat_class et booking_channel restent dans le fait (dimensions dégénérées)
     con.execute("""
         CREATE OR REPLACE TABLE fact_booking AS
         SELECT
@@ -106,7 +90,7 @@ def ingest_gold():
             b.booking_date,
             b.passenger_id,
             b.flight_id,
-            b.airport_id,                                   -- aéroport de départ du vol réservé
+            b.airport_id,       -- aéroport de départ du vol
             b.currency,
             b.seat_class,
             b.booking_channel,
@@ -118,11 +102,9 @@ def ingest_gold():
         LEFT JOIN dim_currency c ON b.currency = c.currency
     """)
 
-    # Chiffre d'affaires (en EUR) et volume, par jour de réservation et par compagnie.
-    # LEFT JOIN : une réservation dont le vol aurait été supprimé côté source reste comptée,
-    # grâce à la désactivation (et non suppression) des vols en silver.
-    # Table entièrement recalculée à chaque exécution : ses colonnes techniques datent donc de
-    # la dernière reconstruction, pas de la première apparition de chaque ligne.
+    # CA par jour et par compagnie. Je la mets ici parce qu'elle a besoin de fact_booking
+    # et de dim_flight, et dans run_month.py le gold des bookings est fait en dernier.
+    # LEFT JOIN : les réservations sur un vol désactivé sont quand même comptées.
     con.execute("""
         CREATE OR REPLACE TABLE agg_revenue_daily_airline AS
         SELECT
