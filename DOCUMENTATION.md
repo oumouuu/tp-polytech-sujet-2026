@@ -120,7 +120,7 @@ Toutes mes tables silver et gold ont `insert_timestamp` et `update_timestamp`. L
 le moment où la ligne a été vue pour la première fois, et ne change plus. La deuxième change
 chaque fois que la ligne est mise à jour ou désactivée.
 
-## Ce que j'ai vérifié
+## Mes verifications
 
 Ces chiffres viennent des données telles qu'elles étaient le 25/09/2026. Le dépôt des données a
 été modifié pendant le TP, donc si elles changent encore, les chiffres changeront aussi.
@@ -134,7 +134,7 @@ Ces chiffres viennent des données telles qu'elles étaient le 25/09/2026. Le d�
   chiffres restent les mêmes.
 - Les 9 requêtes de `sql/analysis/queries_analyse.sql` fonctionnent sur mon modèle.
 
-## Les limites
+## Les limites du tp
 
 - Je garde seulement la dernière version d'un vol ou d'un passager. Si un vol change d'horaire,
   je n'ai plus l'ancien horaire. Pour garder l'historique, il faudrait faire le SCD2 vu en cours.
