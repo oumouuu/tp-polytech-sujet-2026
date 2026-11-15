@@ -82,7 +82,8 @@ def ingest_gold():
     con = get_connection()
 
     # une ligne par réservation, avec les clés vers les dimensions et le montant en euros
-    # seat_class et booking_channel restent dans le fait (dimensions dégénérées)
+    # seat_class et booking_channel restent dans la table de fait : ils n'ont que 4 valeurs
+    # chacun, pas besoin d'une table à part
     con.execute("""
         CREATE OR REPLACE TABLE fact_booking AS
         SELECT

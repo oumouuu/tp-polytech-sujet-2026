@@ -1,6 +1,6 @@
 """
-Utilitaires partagés par les scripts d'ingestion. `get_connection` est fourni tel quel ;
-`fetch_csv` est à vous d'implémenter (cf. TODO)
+Utilitaires partagés par les scripts d'ingestion. `get_connection` est fourni tel quel.
+`fetch_csv` télécharge le fichier dans bronze/ s'il n'y est pas déjà, puis le relit.
 """
 import os
 import urllib.request
