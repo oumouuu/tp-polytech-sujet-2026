@@ -15,7 +15,7 @@ RAW_BASE = "https://raw.githubusercontent.com/kevinl75/tp-polytech-dataset/main"
 
 
 def fetch_csv(subdir: str, filename: str) -> pd.DataFrame:
-    """Doit renvoyer le contenu de <subdir>/<filename> sous forme de DataFrame pandas."""
+    """Renvoie le contenu de <subdir>/<filename> sous forme de DataFrame pandas."""
     chemin = os.path.join(BRONZE_DIR, subdir, filename)
 
     # on télécharge seulement si le fichier n'est pas déjà dans bronze/
