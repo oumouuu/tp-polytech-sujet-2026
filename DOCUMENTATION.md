@@ -14,7 +14,7 @@ python3 ingestion/run_month.py
 Il faut compter une minute environ, le temps de télécharger les 155 fichiers. Quand c'est fini
 on a le dossier `bronze/` avec tous les fichiers bruts et la base `warehouse.duckdb`.
 
-## Ce que j'ai remarqué dans les données
+## Mes remarqué dans les données
 
 Avant de commencer à coder j'ai ouvert les fichiers du dossier `init/` et ceux des trois ou
 quatre premiers jours de septembre, pour voir ce qui change d'un jour à l'autre. Voilà ce que
