@@ -5,6 +5,8 @@ Oumou MARIKO, 5A ISia (TP fait seule)
 Pour lancer :
 
 ```bash
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 python3 ingestion/run_month.py
 ```
