@@ -1,156 +1,67 @@
-# Documentation du TP d'ingénierie des données
+# Documentation
 
-Oumou MARIKO, 5A ISia. J'ai fait le TP seule.
+Oumou MARIKO, 5A ISia (TP fait seule)
 
-## Comment lancer le projet
+Pour lancer :
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
 pip install -r requirements.txt
 python3 ingestion/run_month.py
 ```
 
-Il faut compter une minute environ, le temps de télécharger les 155 fichiers. Quand c'est fini
-on a le dossier `bronze/` avec tous les fichiers bruts et la base `warehouse.duckdb`.
-
-## Mes remarqué dans les données
-
-Avant de commencer à coder j'ai ouvert les fichiers du dossier `init/` et ceux des trois ou
-quatre premiers jours de septembre, pour voir ce qui change d'un jour à l'autre. Voilà ce que
-j'ai noté :
-
-- Chaque fichier a une colonne qui sert de clé : `airport_id`, `flight_id`, `passenger_id`
-  (qui s'appelle `id_passager` dans le fichier français) et `booking_id`.
-- Pour les aéroports, les vols et les passagers, le fichier du jour contient tout, pas seulement
-  les nouveautés. Le fichier du 2 septembre ressemble beaucoup à celui du 1er.
-- Pour les réservations c'est l'inverse, le fichier du jour contient uniquement les réservations
-  faites ce jour-là.
-- Les aéroports ne bougent quasiment pas. Les vols changent assez souvent et il y en a qui
-  disparaissent du fichier. Pour les passagers il y en a des nouveaux presque chaque jour et
-  quelques-uns qui disparaissent aussi.
-- Les deux fichiers passagers n'ont pas du tout le même format : les colonnes n'ont pas le même
-  nom, le genre est écrit `Male/Female` d'un côté et `Homme/Femme` de l'autre, et les dates sont
-  en `2001-05-14` dans l'un et en `14/05/2001` dans l'autre. Par contre j'ai vérifié, un
-  passager n'est jamais dans les deux fichiers en même temps.
-- Dans le fichier de départ, 117 vols sur 420 ont une heure d'arrivée plus petite que l'heure
-  de départ. Au début j'ai cru à une erreur, en fait ce sont juste des vols qui arrivent le
-  lendemain.
-- Le `airport_id` d'une réservation correspond toujours à l'aéroport de départ du vol.
-
-## Table de fait et dimensions
-
-Une réservation, c'est un événement : ça se passe à un moment donné et après ça ne bouge plus.
-C'est pour ça que c'est ma table de fait, `fact_booking`. Une ligne dans cette table, c'est une
-réservation.
-
-Les vols, les passagers et les aéroports, eux, servent à décrire la réservation : qui a réservé,
-quel vol, depuis quel aéroport. Et leurs infos peuvent changer dans le temps (un vol qui change
-d'horaire, un passager qui change d'email). Donc ce sont mes dimensions.
-
-## Le modèle gold
-
-C'est un schéma en étoile, `fact_booking` au milieu et les dimensions autour.
+## Modèle de données
 
 ![Modèle de données](docs/modele_donnees.png)
 
-Le schéma est aussi dans `docs/modele_donnees.pptx`.
+J'ai pris les réservations comme table de fait (`fact_booking`) parce qu'une réservation ne
+change plus une fois qu'elle est faite, et que le fichier du jour contient seulement les
+réservations du jour. Les aéroports, les vols et les passagers sont les dimensions : ce sont
+des référentiels, le fichier du jour les contient en entier et leurs infos peuvent changer
+(horaire d'un vol, email d'un passager).
 
-- `fact_booking` : les réservations, avec le montant et les clés vers le vol, le passager,
-  l'aéroport et la devise. J'ai gardé `seat_class` et `booking_channel` directement dedans
-  parce qu'ils n'ont que 4 valeurs possibles chacun, faire une table à part pour ça ne servait
-  à rien.
-- `dim_flight` : les vols, avec en plus la durée du vol (`flight_duration_min`) et une colonne
-  `is_overnight` pour savoir si le vol arrive le lendemain.
-- `dim_passenger` : les passagers des deux fichiers mis ensemble, avec en plus l'âge (`age`) et
-  la tranche d'âge (`age_bracket`).
-- `dim_airport` : les aéroports. C'est le code qui était donné dans le sujet.
-- `dim_currency` : les taux de change, la table était fournie.
-- `agg_revenue_daily_airline` : le chiffre d'affaires en euros et le nombre de réservations par
-  jour et par compagnie.
+J'ai laissé `seat_class` et `booking_channel` dans la table de fait, il y a seulement 4 valeurs
+à chaque fois donc je n'ai pas fait de dimension.
 
-### Les colonnes que je calcule
+Dans le gold j'ai ajouté :
+- la durée du vol en minutes dans `dim_flight`. Certains vols ont une heure d'arrivée avant
+  l'heure de départ (117 sur 420 dans init), ce sont des vols qui arrivent le lendemain, donc
+  dans ce cas j'ajoute 24h.
+- l'âge et la tranche d'âge dans `dim_passenger`. L'âge est calculé au 30/09/2025 pour que le
+  résultat ne change pas quand on relance.
+- `amount_eur` dans `fact_booking` avec les taux de `dim_currency`.
 
-- La durée du vol : heure d'arrivée moins heure de départ, en minutes. Quand l'arrivée est avant
-  le départ, c'est que le vol arrive le lendemain, donc je rajoute 24 heures.
-- L'âge et la tranche d'âge : je calcule l'âge au 30 septembre 2025, c'est le dernier jour des
-  données. J'ai pris une date fixe exprès, comme ça le résultat ne change pas si on relance le
-  projet dans six mois. Les tranches sont `<18`, `18-24`, `25-34`, `35-44`, `45-54`, `55-64`
-  et `65+`.
-- Le montant en euros : je multiplie `amount` par le `rate_to_eur` de la table `dim_currency`,
-  et j'arrondis à 2 décimales.
+La table d'agrégation `agg_revenue_daily_airline` (CA par jour et par compagnie) est faite dans
+le `ingest_gold` des réservations, parce que c'est le dernier gold lancé dans `run_month.py`
+et qu'elle a besoin de `dim_flight` pour la compagnie.
 
-### Où je construis la table d'agrégation
+## Mises à jour et suppressions
 
-Je la fais dans le `ingest_gold` des réservations, juste après `fact_booking`. Elle a besoin de
-`fact_booking` et de `dim_flight` (pour le nom de la compagnie). Comme dans `run_month.py` le
-gold des réservations est fait en dernier, `dim_flight` est forcément déjà à jour à ce
-moment-là.
+Pour les aéroports, les vols et les passagers je fais un upsert, comme dans
+`ingest_airports.py` : si la clé n'existe pas j'ajoute la ligne, sinon je la mets à jour.
+Quand une ligne n'est plus dans le fichier du jour je ne la supprime pas, je mets `is_active`
+à false avec la date dans `deleted_date`. Sinon on perd le lien avec les réservations : à la
+fin du mois il y a 18 vols désactivés et 774 réservations dessus.
 
-## Insert ou upsert
+Pour les réservations c'est un insert simple, avec `ON CONFLICT DO NOTHING` pour ne pas avoir
+de doublons si on relance le même jour.
 
-### Aéroports, vols et passagers : upsert
+Les deux fichiers passagers n'ont pas le même format (noms de colonnes, Homme/Femme, format
+des dates). Je remets le fichier FR au format du fichier EN dans `ingest_silver` et je les
+réunis dans `silver_passengers`, avec une colonne `source_system` pour savoir d'où vient la
+ligne.
 
-Vu que le fichier du jour contient toutes les lignes, je le compare avec ce que j'ai déjà dans
-la table :
+## Résultat
 
-- si la ligne n'existe pas encore, je l'ajoute ;
-- si elle existe déjà, je la mets à jour ;
-- si une ligne de ma table n'est plus dans le fichier, je ne la supprime pas, je passe
-  `is_active` à `false` et je note la date dans `deleted_date`.
+Avec les données du 22/11/2026 j'obtiens 81 aéroports, 714 vols (18 désactivés), 2 221
+passagers (7 désactivés) et 38 930 réservations. Il n'y a pas de réservation sans vol, sans
+passager ou sans aéroport, et relancer un jour ne crée pas de doublons.
 
-Je ne supprime jamais rien parce qu'il y a des réservations qui pointent dessus. Par exemple à
-la fin du mois, 18 vols ont disparu des fichiers alors qu'il y a 774 réservations faites sur ces
-vols. Si je les supprimais, ces réservations ne seraient plus rattachées à aucun vol.
+## Limites
 
-C'est exactement la logique de `ingest_airports.py` qui était donnée, je l'ai reprise pour les
-vols et les passagers.
-
-### Réservations : insert
-
-Le fichier du jour contient seulement des nouvelles réservations, et une réservation ne change
-jamais. Donc rien à mettre à jour et rien à désactiver, j'ajoute juste les lignes. J'ai mis un
-`ON CONFLICT DO NOTHING` pour pouvoir relancer le même jour deux fois sans avoir de doublons.
-
-### Les deux fichiers passagers
-
-Dans `ingest_silver`, je remets d'abord le fichier français au format du fichier anglais : je
-renomme les colonnes, je remplace `Homme/Femme` par `Male/Female` et je remets les dates au
-même format. Ensuite je mets les deux fichiers l'un sous l'autre dans une seule table,
-`silver_passengers`. J'ai rajouté une colonne `source_system` (`EN` ou `FR`) pour retrouver de
-quel fichier vient chaque passager.
-
-### Les colonnes techniques
-
-Toutes mes tables silver et gold ont `insert_timestamp` et `update_timestamp`. La première,
-c'est le moment où la ligne a été vue pour la première fois, elle ne bouge plus après. La
-deuxième change à chaque fois que la ligne est mise à jour ou désactivée.
-
-## Mes vérifications
-
-Les chiffres ci-dessous correspondent aux données telles qu'elles étaient le 22/11/2026. Le
-dépôt des données a été modifié pendant le TP, donc si ça change encore les chiffres changeront
-aussi.
-
-- Le projet tourne du début à la fin sans erreur. Je l'ai testé sur deux ordinateurs en
-  repartant à chaque fois d'un clone propre.
-- À la fin j'ai 81 aéroports, 714 vols dont 18 désactivés, 2 221 passagers dont 7 désactivés,
-  et 38 930 réservations.
-- Aucune réservation ne pointe vers un vol, un passager ou un aéroport qui n'existe pas.
-- Si je relance le dernier jour une deuxième fois, je n'ai aucun doublon et les chiffres ne
-  bougent pas.
-- Les 9 requêtes de `sql/analysis/queries_analyse.sql` fonctionnent sur mon modèle.
-
-## Les limites du TP
-
-- Je garde seulement la dernière version d'un vol ou d'un passager. Si un vol change d'horaire,
-  l'ancien horaire est perdu. Pour garder l'historique il faudrait faire du SCD2, c'était le
-  bonus et je ne l'ai pas fait.
-- `update_timestamp` est modifié à chaque passage, même quand les valeurs n'ont pas changé. Le
-  code fourni pour les aéroports faisait comme ça et j'ai gardé la même logique.
-- Il faut rejouer les jours dans l'ordre. Si on rejoue un ancien jour après un jour plus récent,
-  les tables reviennent à l'ancien état.
-- Les taux de change sont fixes, donc le montant en euros n'est pas exact.
+- Pas d'historique : si un vol change d'horaire je perds l'ancien (il faudrait le SCD2, je
+  n'ai pas fait les bonus).
+- Il faut rejouer les jours dans l'ordre.
+- `update_timestamp` change à chaque passage même si la ligne n'a pas changé, comme dans le
+  code fourni pour les aéroports.
+- Les taux de change sont fixes.
 - L'âge est calculé à une date fixe et pas à la date de la réservation.
-- Je n'ai pas fait de table de dates. Les fonctions de date de DuckDB suffisaient pour les
-  analyses demandées.
