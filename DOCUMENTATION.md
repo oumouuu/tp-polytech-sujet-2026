@@ -11,9 +11,8 @@ pip install -r requirements.txt
 python3 ingestion/run_month.py
 ```
 
-Ça prend environ une minute (155 fichiers à télécharger).
 
-## Ce que j'ai vu dans les données
+## Observation des  données
 
 Avant de coder j'ai regardé les fichiers de `init/` et des premiers jours de septembre.
 
@@ -82,7 +81,7 @@ passagers (7 désactivés) et 38 930 réservations. Il n'y a pas de réservation
 passager ou sans aéroport, et relancer un jour ne crée pas de doublons. Les 9 requêtes de
 `sql/analysis/queries_analyse.sql` fonctionnent sur le modèle.
 
-## Limites
+## Limites de mon tp
 
 - Pas d'historique : si un vol change d'horaire je perds l'ancien (il faudrait le SCD2, je
   n'ai pas fait les bonus).
